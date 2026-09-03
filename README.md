@@ -19,8 +19,9 @@ Authenticate with the Google account that owns your Google AI plan:
 → Sign in with an account
 → Select "Google Antigravity (OAuth)"
 → Complete Google OAuth in your browser
-→ Paste the callback URL or authorization code back into Pi
 ```
+
+Pi starts a local loopback server (`http://localhost:51121/oauth-callback`) to receive the OAuth callback automatically. If running on a remote/headless machine over SSH where localhost cannot be reached, you can paste the final redirect URL or authorization code into the prompt as a fallback.
 
 `/login google-antigravity` can be used to skip the provider selector.
 
