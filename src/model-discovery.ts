@@ -40,71 +40,152 @@ export interface DiscoveredModel {
   maxTokens: number;
 }
 
-const GEMINI_FLASH_INTRO_END = Date.UTC(2027, 0, 1);
+const OFFICIAL_PRICING_URL = "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing";
 
-function geminiFlashCost(output: number): ModelCost {
-  const introductory = Date.now() < GEMINI_FLASH_INTRO_END;
-  return {
-    input: introductory ? 0.75 : 1.5,
-    output: introductory ? output : output * 2,
-    cacheRead: introductory ? 0.075 : 0.15,
-    // Google lists cached-input token rates, but no separate cache-write
-    // token rate for these Gemini models. Explicit cache storage is billed
-    // hourly and is not represented by Pi's per-token cacheWrite field.
-    cacheWrite: 0,
-  };
+export function emptyModelCost(): ModelCost {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pricesIn(value: string): number[] {
+  return [...value.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)].map((match) => Number(match[1]));
+}
+
+function pricingRows(html: string): Array<{ cells: string[] }> {
+  return [...html.matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map((row) => ({
+    cells: [...row[0].matchAll(/<t[dh]\b[\s\S]*?<\/t[dh]>/gi)].map((cell) => decodeHtml(cell[0])),
+  }));
+}
+
+function pricingModelCell(value: string): { name: string; active: boolean } {
+  const through = value.match(/through\s+(.+)$/i)?.[1];
+  const starting = value.match(/starting\s+(.+)$/i)?.[1];
+  let active = true;
+  if (through) {
+    const date = new Date(through);
+    date.setUTCHours(23, 59, 59, 999);
+    active = Date.now() <= date.getTime();
+  } else if (starting) {
+    const date = new Date(starting);
+    active = Date.now() >= date.getTime();
+  }
+  const name = value
+    .replace(/\s*\*?\s*(?:through|starting)\s+.*$/i, "")
+    .replace(/\*$/g, "")
+    .replace(/\s+preview$/i, "")
+    .trim();
+  return { name, active };
+}
+
+function canonicalPricingName(modelId: string): string | undefined {
+  const id = modelId.toLowerCase().replace(/-(minimal|low|medium|high|xhigh|max|tiered)$/i, "");
+  if (id.startsWith("gemini-3.8-flash")) return "Gemini 3.8 Flash";
+  if (id.startsWith("gemini-3.7-flash")) return "Gemini 3.7 Flash";
+  if (id.startsWith("gemini-3.6-flash")) return "Gemini 3.6 Flash";
+  if (id.startsWith("gemini-3.5-flash")) return "Gemini 3.5 Flash";
+  if (id.startsWith("gemini-3.1-flash-lite")) return "Gemini 3.1 Flash-Lite";
+  if (id.startsWith("gemini-3.1-pro")) return "Gemini 3.1 Pro";
+  if (id.startsWith("gemini-2.5-pro")) return "Gemini 2.5 Pro";
+  if (id.startsWith("gemini-2.5-flash")) return "Gemini 2.5 Flash";
+  if (id.startsWith("claude-sonnet-4-6")) return "Claude Sonnet 4.6";
+  if (id.startsWith("claude-opus-4-6")) return "Claude Opus 4.6";
+  if (id.startsWith("gpt-oss-120b")) return "gpt-oss-120b";
+  return undefined;
 }
 
 /**
- * Official Google Agent Platform equivalent rates, in USD per 1M tokens.
- * Antigravity's Pro/Ultra baseline quota is subscription-based, so these
- * values are only an equivalent estimate for Pi's cost display; they are not
- * a charge made to the user's account.
+ * Read the current official Agent Platform pricing page. Antigravity's
+ * subscription quota itself is not a dollar bill; these rates are only used
+ * for Pi's equivalent cost estimate. No numeric prices are embedded here.
  */
-export function officialCostForModel(modelId: string): ModelCost {
-  const id = modelId.toLowerCase().replace(/-(minimal|low|medium|high|xhigh|max|tiered)$/i, "");
+export async function fetchOfficialModelPricing(signal?: AbortSignal): Promise<Map<string, ModelCost>> {
+  const response = await fetch(OFFICIAL_PRICING_URL, {
+    signal: signal ?? AbortSignal.timeout(10_000),
+    headers: { "User-Agent": "pi-antigravity" },
+  });
+  if (!response.ok) throw new Error(`Official pricing request failed: HTTP ${response.status}`);
 
-  if (/^gemini-3\.(8|7|6)-flash/.test(id)) return geminiFlashCost(3.75);
-  if (/^gemini-3\.5-flash/.test(id)) {
-    return { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 };
-  }
-  if (/^gemini-3\.1-flash-lite/.test(id)) {
-    return { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0 };
-  }
-  if (/^gemini-3\.1-pro/.test(id)) {
-    return {
-      input: 2,
-      output: 12,
-      cacheRead: 0.2,
-      cacheWrite: 0,
-      tiers: [{ inputTokensAbove: 200_000, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 0 }],
-    };
-  }
-  if (/^gemini-2\.5-pro/.test(id)) {
-    return {
-      input: 1.25,
-      output: 10,
-      cacheRead: 0.125,
-      cacheWrite: 0,
-      tiers: [{ inputTokensAbove: 200_000, input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 }],
-    };
-  }
-  if (/^gemini-2\.5-flash/.test(id)) {
-    return { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0 };
-  }
-  if (/^claude-sonnet-4-6/.test(id)) {
-    return { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
-  }
-  if (/^claude-opus-4-6/.test(id)) {
-    return { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
-  }
-  if (/^gpt-oss-120b/.test(id)) {
-    return { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0 };
+  const rows = pricingRows(await response.text());
+  const result = new Map<string, ModelCost>();
+  let currentModel: string | undefined;
+  const pending = new Map<string, { input?: number[]; output?: number[]; cacheRead?: number; cacheWrite?: number }>();
+
+  for (const row of rows) {
+    if (row.cells.length < 2) continue;
+    const modelCell = row.cells[0];
+    if (modelCell) {
+      const marker = pricingModelCell(modelCell);
+      // The official page repeats the same model for Standard, Batch, Flex,
+      // Priority, and regional tables. Keep the first active Standard entry;
+      // later duplicate tables must not overwrite it.
+      const existing = pending.get(marker.name);
+      const complete = Boolean(existing?.input?.length && existing?.output?.length);
+      currentModel = marker.active && !complete ? marker.name : undefined;
+    }
+    const type = row.cells[1].toLowerCase();
+    if (!currentModel) continue;
+
+    const prices = pricesIn(row.cells.slice(2).join(" "));
+    if (!prices.length) continue;
+    const item = pending.get(currentModel) ?? {};
+    let recognized = false;
+    if (type === "input" || type.startsWith("input ") && !type.startsWith("input (audio") && !type.startsWith("input audio")) {
+      item.input = prices;
+      recognized = true;
+    } else if (type === "output" || type.startsWith("text output")) {
+      item.output = prices;
+      recognized = true;
+    } else if (type === "cache hit") {
+      if (item.cacheRead === undefined) item.cacheRead = prices[0];
+      recognized = true;
+    } else if (type.includes("cache write")) {
+      if (item.cacheWrite === undefined) item.cacheWrite = prices[0];
+      recognized = true;
+    }
+    // Gemini tables put cached-input prices in the Input row's last columns.
+    if ((type === "input" || type.startsWith("input ") && !type.startsWith("input (audio") && !type.startsWith("input audio")) && prices.length >= 4) item.cacheRead = prices[2];
+    if (recognized) pending.set(currentModel, item);
   }
 
-  // Unknown models must remain free rather than being assigned a price for
-  // a different model. They can be added here when Google publishes rates.
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const [name, value] of pending) {
+    if (!value.input?.length || !value.output?.length) continue;
+    const cost: ModelCost = {
+      input: value.input[0],
+      output: value.output[0],
+      cacheRead: value.cacheRead ?? 0,
+      cacheWrite: value.cacheWrite ?? 0,
+    };
+    if (value.input.length >= 4 && value.output.length >= 2 && (value.input[0] !== value.input[1] || value.output[0] !== value.output[1])) {
+      cost.tiers = [{
+        inputTokensAbove: 200_000,
+        input: value.input[1],
+        output: value.output[1],
+        cacheRead: value.input[3],
+        cacheWrite: cost.cacheWrite,
+      }];
+    }
+    // The page contains separate global and non-global/partner tables. The
+    // first complete entry is the global Agent Platform rate used by this
+    // provider; do not let a later regional table overwrite it.
+    const key = name.toLowerCase();
+    if (!result.has(key)) result.set(key, cost);
+  }
+  return result;
+}
+
+function costForPricingName(modelId: string, pricing: Map<string, ModelCost>): ModelCost {
+  const name = canonicalPricingName(modelId);
+  return name ? pricing.get(name.toLowerCase()) ?? emptyModelCost() : emptyModelCost();
 }
 
 export const BASELINE_MODELS: DiscoveredModel[] = [
@@ -209,11 +290,6 @@ export const BASELINE_MODELS: DiscoveredModel[] = [
   },
 ];
 
-// Keep exported baseline entries and every provider registration priced too.
-for (const model of BASELINE_MODELS) {
-  model.cost = officialCostForModel(model.id);
-}
-
 type RawModelInfo = {
   displayName?: unknown;
   label?: unknown;
@@ -263,7 +339,7 @@ function normalizeModelName(id: string, info: RawModelInfo): string {
     .join(" ");
 }
 
-function modelDefinition(id: string, info: RawModelInfo): DiscoveredModel {
+function modelDefinition(id: string, info: RawModelInfo, pricing: Map<string, ModelCost>): DiscoveredModel {
   const name = normalizeModelName(id, info);
   const reasoning = info.supportsThinking === true
     || info.supportsThinking === undefined && /gemini|claude|gpt-oss/i.test(id);
@@ -273,19 +349,19 @@ function modelDefinition(id: string, info: RawModelInfo): DiscoveredModel {
     name,
     reasoning,
     input: hasImageInput(info) ? ["text", "image"] : ["text"],
-    cost: officialCostForModel(id),
+    cost: costForPricingName(id, pricing),
     contextWindow: numberValue(info.contextWindow, 1_048_576),
     maxTokens: numberValue(info.maxOutputTokens ?? info.maxOutputTokenCount ?? info.maxTokens, 65_536),
   };
 }
 
-function extractModels(payload: unknown): DiscoveredModel[] {
+function extractModels(payload: unknown, pricing: Map<string, ModelCost>): DiscoveredModel[] {
   if (!payload || typeof payload !== "object") return [];
   const models = (payload as AvailableModelsResponse).models;
   if (!models || typeof models !== "object" || Array.isArray(models)) return [];
   return Object.entries(models)
     .filter(([id]) => MODEL_ID.test(id) && !/\s/.test(id))
-    .map(([id, info]) => modelDefinition(id, info ?? {}));
+    .map(([id, info]) => modelDefinition(id, info ?? {}, pricing));
 }
 
 export function getCacheFilePath(): string {
@@ -294,7 +370,7 @@ export function getCacheFilePath(): string {
   return path.join(agentDir, "antigravity-models.json");
 }
 
-function mergeModels(discovered: DiscoveredModel[]): DiscoveredModel[] {
+export function mergeModels(discovered: DiscoveredModel[], pricing?: Map<string, ModelCost>): DiscoveredModel[] {
   const map = new Map<string, DiscoveredModel>();
   for (const m of BASELINE_MODELS) {
     map.set(m.id, m);
@@ -302,10 +378,9 @@ function mergeModels(discovered: DiscoveredModel[]): DiscoveredModel[] {
   for (const m of discovered) {
     map.set(m.id, m);
   }
-  return Array.from(map.values(), (model) => ({
-    ...model,
-    cost: officialCostForModel(model.id),
-  }));
+  return Array.from(map.values(), (model) => pricing
+    ? { ...model, cost: costForPricingName(model.id, pricing) }
+    : model);
 }
 
 export function loadCachedModels(): DiscoveredModel[] {
@@ -361,7 +436,8 @@ export async function queryAntigravityModels(
         signal,
       });
       if (!response.ok) continue;
-      const models = extractModels(await response.json());
+      const pricing = await fetchOfficialModelPricing(signal);
+      const models = mergeModels(extractModels(await response.json(), pricing), pricing);
       if (models.length > 0) return models;
     } catch {
       // Continue to next endpoint

@@ -22,15 +22,16 @@ export interface DiscoveredModel {
     contextWindow: number;
     maxTokens: number;
 }
+export declare function emptyModelCost(): ModelCost;
 /**
- * Official Google Agent Platform equivalent rates, in USD per 1M tokens.
- * Antigravity's Pro/Ultra baseline quota is subscription-based, so these
- * values are only an equivalent estimate for Pi's cost display; they are not
- * a charge made to the user's account.
+ * Read the current official Agent Platform pricing page. Antigravity's
+ * subscription quota itself is not a dollar bill; these rates are only used
+ * for Pi's equivalent cost estimate. No numeric prices are embedded here.
  */
-export declare function officialCostForModel(modelId: string): ModelCost;
+export declare function fetchOfficialModelPricing(signal?: AbortSignal): Promise<Map<string, ModelCost>>;
 export declare const BASELINE_MODELS: DiscoveredModel[];
 export declare function getCacheFilePath(): string;
+export declare function mergeModels(discovered: DiscoveredModel[], pricing?: Map<string, ModelCost>): DiscoveredModel[];
 export declare function loadCachedModels(): DiscoveredModel[];
 export declare function saveCachedModels(models: DiscoveredModel[]): void;
 export declare function queryAntigravityModels(accessToken: string, refreshToken: string, signal?: AbortSignal): Promise<DiscoveredModel[]>;

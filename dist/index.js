@@ -38,59 +38,117 @@ var ENDPOINTS = [
   "https://daily-cloudcode-pa.sandbox.googleapis.com"
 ];
 var MODEL_ID = /^(gemini-|claude-|gpt-oss-)/i;
-var GEMINI_FLASH_INTRO_END = Date.UTC(2027, 0, 1);
-function geminiFlashCost(output) {
-  const introductory = Date.now() < GEMINI_FLASH_INTRO_END;
-  return {
-    input: introductory ? 0.75 : 1.5,
-    output: introductory ? output : output * 2,
-    cacheRead: introductory ? 0.075 : 0.15,
-    // Google lists cached-input token rates, but no separate cache-write
-    // token rate for these Gemini models. Explicit cache storage is billed
-    // hourly and is not represented by Pi's per-token cacheWrite field.
-    cacheWrite: 0
-  };
-}
-function officialCostForModel(modelId) {
-  const id = modelId.toLowerCase().replace(/-(minimal|low|medium|high|xhigh|max|tiered)$/i, "");
-  if (/^gemini-3\.(8|7|6)-flash/.test(id)) return geminiFlashCost(3.75);
-  if (/^gemini-3\.5-flash/.test(id)) {
-    return { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 };
-  }
-  if (/^gemini-3\.1-flash-lite/.test(id)) {
-    return { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0 };
-  }
-  if (/^gemini-3\.1-pro/.test(id)) {
-    return {
-      input: 2,
-      output: 12,
-      cacheRead: 0.2,
-      cacheWrite: 0,
-      tiers: [{ inputTokensAbove: 2e5, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 0 }]
-    };
-  }
-  if (/^gemini-2\.5-pro/.test(id)) {
-    return {
-      input: 1.25,
-      output: 10,
-      cacheRead: 0.125,
-      cacheWrite: 0,
-      tiers: [{ inputTokensAbove: 2e5, input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 }]
-    };
-  }
-  if (/^gemini-2\.5-flash/.test(id)) {
-    return { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0 };
-  }
-  if (/^claude-sonnet-4-6/.test(id)) {
-    return { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
-  }
-  if (/^claude-opus-4-6/.test(id)) {
-    return { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
-  }
-  if (/^gpt-oss-120b/.test(id)) {
-    return { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0 };
-  }
+var OFFICIAL_PRICING_URL = "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing";
+function emptyModelCost() {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+function decodeHtml(value) {
+  return value.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&#39;/g, "'").replace(/&quot;/gi, '"').replace(/\s+/g, " ").trim();
+}
+function pricesIn(value) {
+  return [...value.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)].map((match) => Number(match[1]));
+}
+function pricingRows(html) {
+  return [...html.matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map((row) => ({
+    cells: [...row[0].matchAll(/<t[dh]\b[\s\S]*?<\/t[dh]>/gi)].map((cell) => decodeHtml(cell[0]))
+  }));
+}
+function pricingModelCell(value) {
+  const through = value.match(/through\s+(.+)$/i)?.[1];
+  const starting = value.match(/starting\s+(.+)$/i)?.[1];
+  let active = true;
+  if (through) {
+    const date = new Date(through);
+    date.setUTCHours(23, 59, 59, 999);
+    active = Date.now() <= date.getTime();
+  } else if (starting) {
+    const date = new Date(starting);
+    active = Date.now() >= date.getTime();
+  }
+  const name = value.replace(/\s*\*?\s*(?:through|starting)\s+.*$/i, "").replace(/\*$/g, "").replace(/\s+preview$/i, "").trim();
+  return { name, active };
+}
+function canonicalPricingName(modelId) {
+  const id = modelId.toLowerCase().replace(/-(minimal|low|medium|high|xhigh|max|tiered)$/i, "");
+  if (id.startsWith("gemini-3.8-flash")) return "Gemini 3.8 Flash";
+  if (id.startsWith("gemini-3.7-flash")) return "Gemini 3.7 Flash";
+  if (id.startsWith("gemini-3.6-flash")) return "Gemini 3.6 Flash";
+  if (id.startsWith("gemini-3.5-flash")) return "Gemini 3.5 Flash";
+  if (id.startsWith("gemini-3.1-flash-lite")) return "Gemini 3.1 Flash-Lite";
+  if (id.startsWith("gemini-3.1-pro")) return "Gemini 3.1 Pro";
+  if (id.startsWith("gemini-2.5-pro")) return "Gemini 2.5 Pro";
+  if (id.startsWith("gemini-2.5-flash")) return "Gemini 2.5 Flash";
+  if (id.startsWith("claude-sonnet-4-6")) return "Claude Sonnet 4.6";
+  if (id.startsWith("claude-opus-4-6")) return "Claude Opus 4.6";
+  if (id.startsWith("gpt-oss-120b")) return "gpt-oss-120b";
+  return void 0;
+}
+async function fetchOfficialModelPricing(signal) {
+  const response = await fetch(OFFICIAL_PRICING_URL, {
+    signal: signal ?? AbortSignal.timeout(1e4),
+    headers: { "User-Agent": "pi-antigravity" }
+  });
+  if (!response.ok) throw new Error(`Official pricing request failed: HTTP ${response.status}`);
+  const rows = pricingRows(await response.text());
+  const result = /* @__PURE__ */ new Map();
+  let currentModel;
+  const pending = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (row.cells.length < 2) continue;
+    const modelCell = row.cells[0];
+    if (modelCell) {
+      const marker = pricingModelCell(modelCell);
+      const existing = pending.get(marker.name);
+      const complete = Boolean(existing?.input?.length && existing?.output?.length);
+      currentModel = marker.active && !complete ? marker.name : void 0;
+    }
+    const type = row.cells[1].toLowerCase();
+    if (!currentModel) continue;
+    const prices = pricesIn(row.cells.slice(2).join(" "));
+    if (!prices.length) continue;
+    const item = pending.get(currentModel) ?? {};
+    let recognized = false;
+    if (type === "input" || type.startsWith("input ") && !type.startsWith("input (audio") && !type.startsWith("input audio")) {
+      item.input = prices;
+      recognized = true;
+    } else if (type === "output" || type.startsWith("text output")) {
+      item.output = prices;
+      recognized = true;
+    } else if (type === "cache hit") {
+      if (item.cacheRead === void 0) item.cacheRead = prices[0];
+      recognized = true;
+    } else if (type.includes("cache write")) {
+      if (item.cacheWrite === void 0) item.cacheWrite = prices[0];
+      recognized = true;
+    }
+    if ((type === "input" || type.startsWith("input ") && !type.startsWith("input (audio") && !type.startsWith("input audio")) && prices.length >= 4) item.cacheRead = prices[2];
+    if (recognized) pending.set(currentModel, item);
+  }
+  for (const [name, value] of pending) {
+    if (!value.input?.length || !value.output?.length) continue;
+    const cost = {
+      input: value.input[0],
+      output: value.output[0],
+      cacheRead: value.cacheRead ?? 0,
+      cacheWrite: value.cacheWrite ?? 0
+    };
+    if (value.input.length >= 4 && value.output.length >= 2 && (value.input[0] !== value.input[1] || value.output[0] !== value.output[1])) {
+      cost.tiers = [{
+        inputTokensAbove: 2e5,
+        input: value.input[1],
+        output: value.output[1],
+        cacheRead: value.input[3],
+        cacheWrite: cost.cacheWrite
+      }];
+    }
+    const key = name.toLowerCase();
+    if (!result.has(key)) result.set(key, cost);
+  }
+  return result;
+}
+function costForPricingName(modelId, pricing) {
+  const name = canonicalPricingName(modelId);
+  return name ? pricing.get(name.toLowerCase()) ?? emptyModelCost() : emptyModelCost();
 }
 var BASELINE_MODELS = [
   {
@@ -193,9 +251,6 @@ var BASELINE_MODELS = [
     maxTokens: 32768
   }
 ];
-for (const model of BASELINE_MODELS) {
-  model.cost = officialCostForModel(model.id);
-}
 function stringValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
 }
@@ -214,7 +269,7 @@ function normalizeModelName(id, info) {
   if (custom) return custom;
   return id.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
 }
-function modelDefinition(id, info) {
+function modelDefinition(id, info, pricing) {
   const name = normalizeModelName(id, info);
   const reasoning = info.supportsThinking === true || info.supportsThinking === void 0 && /gemini|claude|gpt-oss/i.test(id);
   return {
@@ -222,22 +277,22 @@ function modelDefinition(id, info) {
     name,
     reasoning,
     input: hasImageInput(info) ? ["text", "image"] : ["text"],
-    cost: officialCostForModel(id),
+    cost: costForPricingName(id, pricing),
     contextWindow: numberValue(info.contextWindow, 1048576),
     maxTokens: numberValue(info.maxOutputTokens ?? info.maxOutputTokenCount ?? info.maxTokens, 65536)
   };
 }
-function extractModels(payload) {
+function extractModels(payload, pricing) {
   if (!payload || typeof payload !== "object") return [];
   const models = payload.models;
   if (!models || typeof models !== "object" || Array.isArray(models)) return [];
-  return Object.entries(models).filter(([id]) => MODEL_ID.test(id) && !/\s/.test(id)).map(([id, info]) => modelDefinition(id, info ?? {}));
+  return Object.entries(models).filter(([id]) => MODEL_ID.test(id) && !/\s/.test(id)).map(([id, info]) => modelDefinition(id, info ?? {}, pricing));
 }
 function getCacheFilePath() {
   const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".pi/agent");
   return path.join(agentDir, "antigravity-models.json");
 }
-function mergeModels(discovered) {
+function mergeModels(discovered, pricing) {
   const map = /* @__PURE__ */ new Map();
   for (const m of BASELINE_MODELS) {
     map.set(m.id, m);
@@ -245,10 +300,7 @@ function mergeModels(discovered) {
   for (const m of discovered) {
     map.set(m.id, m);
   }
-  return Array.from(map.values(), (model) => ({
-    ...model,
-    cost: officialCostForModel(model.id)
-  }));
+  return Array.from(map.values(), (model) => pricing ? { ...model, cost: costForPricingName(model.id, pricing) } : model);
 }
 function loadCachedModels() {
   try {
@@ -293,7 +345,8 @@ async function queryAntigravityModels(accessToken, refreshToken, signal) {
         signal
       });
       if (!response.ok) continue;
-      const models = extractModels(await response.json());
+      const pricing = await fetchOfficialModelPricing(signal);
+      const models = mergeModels(extractModels(await response.json(), pricing), pricing);
       if (models.length > 0) return models;
     } catch {
     }
@@ -903,7 +956,8 @@ async function piAntigravity(pi) {
       const liveModels = await queryAntigravityModels(stored.access, stored.refresh, controller.signal);
       clearTimeout(timeout);
       if (liveModels.length > 0) {
-        models = loadCachedModels();
+        models = liveModels;
+        saveCachedModels(models);
       }
     } catch {
     }
