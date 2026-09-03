@@ -38,6 +38,60 @@ var ENDPOINTS = [
   "https://daily-cloudcode-pa.sandbox.googleapis.com"
 ];
 var MODEL_ID = /^(gemini-|claude-|gpt-oss-)/i;
+var GEMINI_FLASH_INTRO_END = Date.UTC(2027, 0, 1);
+function geminiFlashCost(output) {
+  const introductory = Date.now() < GEMINI_FLASH_INTRO_END;
+  return {
+    input: introductory ? 0.75 : 1.5,
+    output: introductory ? output : output * 2,
+    cacheRead: introductory ? 0.075 : 0.15,
+    // Google lists cached-input token rates, but no separate cache-write
+    // token rate for these Gemini models. Explicit cache storage is billed
+    // hourly and is not represented by Pi's per-token cacheWrite field.
+    cacheWrite: 0
+  };
+}
+function officialCostForModel(modelId) {
+  const id = modelId.toLowerCase().replace(/-(minimal|low|medium|high|xhigh|max|tiered)$/i, "");
+  if (/^gemini-3\.(8|7|6)-flash/.test(id)) return geminiFlashCost(3.75);
+  if (/^gemini-3\.5-flash/.test(id)) {
+    return { input: 1.5, output: 9, cacheRead: 0.15, cacheWrite: 0 };
+  }
+  if (/^gemini-3\.1-flash-lite/.test(id)) {
+    return { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0 };
+  }
+  if (/^gemini-3\.1-pro/.test(id)) {
+    return {
+      input: 2,
+      output: 12,
+      cacheRead: 0.2,
+      cacheWrite: 0,
+      tiers: [{ inputTokensAbove: 2e5, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 0 }]
+    };
+  }
+  if (/^gemini-2\.5-pro/.test(id)) {
+    return {
+      input: 1.25,
+      output: 10,
+      cacheRead: 0.125,
+      cacheWrite: 0,
+      tiers: [{ inputTokensAbove: 2e5, input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 }]
+    };
+  }
+  if (/^gemini-2\.5-flash/.test(id)) {
+    return { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0 };
+  }
+  if (/^claude-sonnet-4-6/.test(id)) {
+    return { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+  }
+  if (/^claude-opus-4-6/.test(id)) {
+    return { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+  }
+  if (/^gpt-oss-120b/.test(id)) {
+    return { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0 };
+  }
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
 var BASELINE_MODELS = [
   {
     id: "gemini-3.8-flash",
@@ -139,6 +193,9 @@ var BASELINE_MODELS = [
     maxTokens: 32768
   }
 ];
+for (const model of BASELINE_MODELS) {
+  model.cost = officialCostForModel(model.id);
+}
 function stringValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
 }
@@ -165,7 +222,7 @@ function modelDefinition(id, info) {
     name,
     reasoning,
     input: hasImageInput(info) ? ["text", "image"] : ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: officialCostForModel(id),
     contextWindow: numberValue(info.contextWindow, 1048576),
     maxTokens: numberValue(info.maxOutputTokens ?? info.maxOutputTokenCount ?? info.maxTokens, 65536)
   };
@@ -188,7 +245,10 @@ function mergeModels(discovered) {
   for (const m of discovered) {
     map.set(m.id, m);
   }
-  return Array.from(map.values());
+  return Array.from(map.values(), (model) => ({
+    ...model,
+    cost: officialCostForModel(model.id)
+  }));
 }
 function loadCachedModels() {
   try {

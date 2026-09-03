@@ -67,6 +67,24 @@ Model IDs are fetched from Antigravity at runtime. Examples of official IDs incl
 
 The exact list depends on the account, plan, service rollout, and current Antigravity response.
 
+## Cost estimates
+
+Pi's `$` value is an **equivalent estimate**, not a subscription charge. Antigravity Pro/Ultra baseline usage is quota-based. Rates below follow Google's [Agent Platform pricing](https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing), using the current introductory Gemini Flash rates through December 31, 2026 and automatically switching to the published standard rates afterward:
+
+| Model family | Input / 1M | Output / 1M | Cached input / 1M |
+|---|---:|---:|---:|
+| Gemini 3.8 / 3.7 / 3.6 Flash | $0.75* | $3.75* | $0.075* |
+| Gemini 3.5 Flash | $1.50 | $9.00 | $0.15 |
+| Gemini 3.1 Flash-Lite | $0.25 | $1.50 | $0.025 |
+| Gemini 3.1 Pro | $2.00 / $4.00 (>200K) | $12.00 / $18.00 (>200K) | $0.20 / $0.40 (>200K) |
+| Gemini 2.5 Pro | $1.25 / $2.50 (>200K) | $10.00 / $15.00 (>200K) | $0.125 / $0.25 (>200K) |
+| Gemini 2.5 Flash | $0.30 | $2.50 | $0.03 |
+| Claude Sonnet 4.6 | $3.00 | $15.00 | $0.30 |
+| Claude Opus 4.6 | $5.00 | $25.00 | $0.50 |
+| GPT-OSS 120B | $0.09 | $0.36 | — |
+
+`*` Gemini 3.8/3.7/3.6 Flash becomes $1.50 / $7.50 / $0.15 from January 1, 2027. The plugin uses the 5-minute cache-write rate for Claude where Pi exposes a cache-write field; Gemini's separate hourly cache-storage charge is not included.
+
 ## Capabilities
 
 - OAuth login without installing a separate Antigravity client
