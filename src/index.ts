@@ -1,4 +1,6 @@
 import { createServer, type Server } from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   authorizeAntigravity,
   exchangeAntigravity,
@@ -7,7 +9,12 @@ import {
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { rememberPackedRefresh } from "./credential-cache.ts";
-import { fetchAntigravityModels } from "./model-discovery.ts";
+import {
+  fetchAntigravityModels,
+  loadCachedModels,
+  queryAntigravityModels,
+  saveCachedModels,
+} from "./model-discovery.ts";
 import { streamAntigravity } from "./stream.ts";
 
 const PROVIDER = "google-antigravity";
@@ -198,6 +205,14 @@ async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> 
       throw new Error(`Antigravity OAuth exchange failed: ${result.error}`);
     }
 
+    // Refresh model list immediately upon new login
+    try {
+      const discovered = await queryAntigravityModels(result.access, result.refresh);
+      if (discovered.length > 0) saveCachedModels(discovered);
+    } catch {
+      // Ignore background discovery error on login
+    }
+
     return {
       refresh: result.refresh,
       access: result.access,
@@ -223,11 +238,49 @@ async function refresh(credentials: OAuthCredentials): Promise<OAuthCredentials>
   };
 }
 
-export default function piAntigravity(pi: ExtensionAPI): void {
+function readStoredCredential(): { access: string; refresh: string } | undefined {
+  try {
+    const agentDir = process.env.PI_CODING_AGENT_DIR
+      || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".pi/agent");
+    const authPath = path.join(agentDir, "auth.json");
+    if (fs.existsSync(authPath)) {
+      const auth = JSON.parse(fs.readFileSync(authPath, "utf-8"));
+      const cred = auth[PROVIDER];
+      if (cred?.type === "oauth" && cred.access && cred.refresh) {
+        return { access: cred.access, refresh: cred.refresh };
+      }
+    }
+  } catch {
+    // Ignore read errors
+  }
+  return undefined;
+}
+
+export default async function piAntigravity(pi: ExtensionAPI): Promise<void> {
+  let models = loadCachedModels();
+
+  // If user is already authenticated, attempt a fast startup refresh (with timeout)
+  const stored = readStoredCredential();
+  if (stored) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const liveModels = await queryAntigravityModels(stored.access, stored.refresh, controller.signal);
+      clearTimeout(timeout);
+      if (liveModels.length > 0) {
+        models = liveModels;
+        saveCachedModels(liveModels);
+      }
+    } catch {
+      // Fall through to cached models on offline / timeout
+    }
+  }
+
   pi.registerProvider(PROVIDER, {
     name: "Google Antigravity (OAuth)",
     baseUrl: BASE_URL,
     api: "google-generative-ai",
+    models,
     refreshModels: fetchAntigravityModels,
     oauth: {
       name: "Google Antigravity",

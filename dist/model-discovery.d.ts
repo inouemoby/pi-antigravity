@@ -1,5 +1,5 @@
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-export declare function fetchAntigravityModels(context: RefreshModelsContext): Promise<{
+export interface DiscoveredModel {
     id: string;
     name: string;
     reasoning: boolean;
@@ -12,4 +12,10 @@ export declare function fetchAntigravityModels(context: RefreshModelsContext): P
     };
     contextWindow: number;
     maxTokens: number;
-}[]>;
+}
+export declare const BASELINE_MODELS: DiscoveredModel[];
+export declare function getCacheFilePath(): string;
+export declare function loadCachedModels(): DiscoveredModel[];
+export declare function saveCachedModels(models: DiscoveredModel[]): void;
+export declare function queryAntigravityModels(accessToken: string, refreshToken: string, signal?: AbortSignal): Promise<DiscoveredModel[]>;
+export declare function fetchAntigravityModels(context: RefreshModelsContext): Promise<DiscoveredModel[]>;

@@ -1,5 +1,7 @@
 // src/index.ts
 import { createServer } from "node:http";
+import * as fs2 from "node:fs";
+import * as path2 from "node:path";
 import {
   authorizeAntigravity,
   exchangeAntigravity,
@@ -29,11 +31,114 @@ import {
   buildAntigravityLoadCodeAssistMetadata,
   ensureProjectContext
 } from "@cortexkit/antigravity-auth-core";
+import * as fs from "node:fs";
+import * as path from "node:path";
 var ENDPOINTS = [
   "https://cloudcode-pa.googleapis.com",
   "https://daily-cloudcode-pa.sandbox.googleapis.com"
 ];
 var MODEL_ID = /^(gemini-|claude-|gpt-oss-)/i;
+var BASELINE_MODELS = [
+  {
+    id: "gemini-3.8-flash",
+    name: "Gemini 3.8 Flash",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65536
+  },
+  {
+    id: "gemini-3.7-flash",
+    name: "Gemini 3.7 Flash",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65536
+  },
+  {
+    id: "gemini-3.6-flash",
+    name: "Gemini 3.6 Flash",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65536
+  },
+  {
+    id: "gemini-3.5-flash",
+    name: "Gemini 3.5 Flash",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65536
+  },
+  {
+    id: "gemini-3.1-pro",
+    name: "Gemini 3.1 Pro",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65535
+  },
+  {
+    id: "gemini-2.5-pro",
+    name: "Gemini 2.5 Pro",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65535
+  },
+  {
+    id: "gemini-2.5-flash",
+    name: "Gemini 2.5 Flash",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65536
+  },
+  {
+    id: "gemini-3.1-flash-lite",
+    name: "Gemini 3.1 Flash Lite",
+    reasoning: false,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 65535
+  },
+  {
+    id: "claude-sonnet-4-6-thinking",
+    name: "Claude Sonnet 4.6 Thinking",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 25e4,
+    maxTokens: 64e3
+  },
+  {
+    id: "claude-opus-4-6-thinking",
+    name: "Claude Opus 4.6 Thinking",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 25e4,
+    maxTokens: 64e3
+  },
+  {
+    id: "gpt-oss-120b",
+    name: "GPT-OSS 120B",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 131072,
+    maxTokens: 32768
+  }
+];
 function stringValue(value) {
   return typeof value === "string" && value.trim() ? value.trim() : void 0;
 }
@@ -47,8 +152,13 @@ function hasImageInput(info) {
   }
   return false;
 }
+function normalizeModelName(id, info) {
+  const custom = stringValue(info.displayName) ?? stringValue(info.label) ?? stringValue(info.name) ?? stringValue(info.modelName);
+  if (custom) return custom;
+  return id.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
 function modelDefinition(id, info) {
-  const name = stringValue(info.displayName) ?? stringValue(info.label) ?? stringValue(info.name) ?? stringValue(info.modelName) ?? id;
+  const name = normalizeModelName(id, info);
   const reasoning = info.supportsThinking === true || info.supportsThinking === void 0 && /gemini|claude|gpt-oss/i.test(id);
   return {
     id,
@@ -57,7 +167,7 @@ function modelDefinition(id, info) {
     input: hasImageInput(info) ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: numberValue(info.contextWindow, 1048576),
-    maxTokens: numberValue(info.maxOutputTokens ?? info.maxOutputTokenCount, 65536)
+    maxTokens: numberValue(info.maxOutputTokens ?? info.maxOutputTokenCount ?? info.maxTokens, 65536)
   };
 }
 function extractModels(payload) {
@@ -66,56 +176,74 @@ function extractModels(payload) {
   if (!models || typeof models !== "object" || Array.isArray(models)) return [];
   return Object.entries(models).filter(([id]) => MODEL_ID.test(id) && !/\s/.test(id)).map(([id, info]) => modelDefinition(id, info ?? {}));
 }
-function storedModels(context) {
-  return (context.stored?.models ?? []).filter((model) => Boolean(model && typeof model.id === "string")).map((model) => ({
-    id: model.id,
-    name: model.name,
-    reasoning: model.reasoning,
-    input: model.input,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens
-  }));
+function getCacheFilePath() {
+  const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".pi/agent");
+  return path.join(agentDir, "antigravity-models.json");
 }
-async function fetchAntigravityModels(context) {
-  const credential = context.credential?.type === "oauth" ? context.credential : void 0;
-  if (!credential?.access) return storedModels(context);
-  if (!context.allowNetwork || context.signal.aborted) return storedModels(context);
+function loadCachedModels() {
+  try {
+    const cacheFile = getCacheFilePath();
+    if (fs.existsSync(cacheFile)) {
+      const data = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+      if (Array.isArray(data) && data.length > 0) {
+        return data;
+      }
+    }
+  } catch {
+  }
+  return BASELINE_MODELS;
+}
+function saveCachedModels(models) {
+  try {
+    const cacheFile = getCacheFilePath();
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify(models, null, 2), "utf-8");
+  } catch {
+  }
+}
+async function queryAntigravityModels(accessToken, refreshToken, signal) {
   const project = await ensureProjectContext({
     type: "oauth",
-    refresh: credential.refresh,
-    access: credential.access,
-    expires: credential.expires
+    refresh: refreshToken,
+    access: accessToken,
+    expires: Date.now() + 6e4
   });
-  if (!project.effectiveProjectId) return storedModels(context);
+  if (!project.effectiveProjectId) return [];
   const headers = {
-    ...buildAntigravityHarnessBootstrapHeaders(credential.access),
+    ...buildAntigravityHarnessBootstrapHeaders(accessToken),
     "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
     "Client-Metadata": JSON.stringify(buildAntigravityLoadCodeAssistMetadata())
   };
-  let lastError;
   for (const endpoint of ENDPOINTS) {
     try {
       const response = await fetch(`${endpoint}/v1internal:fetchAvailableModels`, {
         method: "POST",
         headers,
         body: JSON.stringify({ project: project.effectiveProjectId }),
-        signal: context.signal
+        signal
       });
-      if (!response.ok) {
-        lastError = new Error(`Model discovery failed: HTTP ${response.status}`);
-        continue;
-      }
+      if (!response.ok) continue;
       const models = extractModels(await response.json());
       if (models.length > 0) return models;
-      lastError = new Error("Antigravity returned no usable models");
-    } catch (error) {
-      if (context.signal.aborted) return storedModels(context);
-      lastError = error instanceof Error ? error : new Error(String(error));
+    } catch {
     }
   }
-  if (lastError && storedModels(context).length > 0) return storedModels(context);
-  throw lastError ?? new Error("Antigravity model discovery failed");
+  return [];
+}
+async function fetchAntigravityModels(context) {
+  const credential = context.credential?.type === "oauth" ? context.credential : void 0;
+  if (!credential?.access || !context.allowNetwork || context.signal.aborted) {
+    return loadCachedModels();
+  }
+  try {
+    const models = await queryAntigravityModels(credential.access, credential.refresh, context.signal);
+    if (models.length > 0) {
+      saveCachedModels(models);
+      return models;
+    }
+  } catch {
+  }
+  return loadCachedModels();
 }
 
 // src/stream.ts
@@ -653,6 +781,11 @@ async function login(callbacks) {
     if (result.type !== "success") {
       throw new Error(`Antigravity OAuth exchange failed: ${result.error}`);
     }
+    try {
+      const discovered = await queryAntigravityModels(result.access, result.refresh);
+      if (discovered.length > 0) saveCachedModels(discovered);
+    } catch {
+    }
     return {
       refresh: result.refresh,
       access: result.access,
@@ -674,11 +807,42 @@ async function refresh(credentials) {
     email: credentials.email
   };
 }
-function piAntigravity(pi) {
+function readStoredCredential() {
+  try {
+    const agentDir = process.env.PI_CODING_AGENT_DIR || path2.join(process.env.USERPROFILE || process.env.HOME || ".", ".pi/agent");
+    const authPath = path2.join(agentDir, "auth.json");
+    if (fs2.existsSync(authPath)) {
+      const auth = JSON.parse(fs2.readFileSync(authPath, "utf-8"));
+      const cred = auth[PROVIDER];
+      if (cred?.type === "oauth" && cred.access && cred.refresh) {
+        return { access: cred.access, refresh: cred.refresh };
+      }
+    }
+  } catch {
+  }
+  return void 0;
+}
+async function piAntigravity(pi) {
+  let models = loadCachedModels();
+  const stored = readStoredCredential();
+  if (stored) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3e3);
+      const liveModels = await queryAntigravityModels(stored.access, stored.refresh, controller.signal);
+      clearTimeout(timeout);
+      if (liveModels.length > 0) {
+        models = liveModels;
+        saveCachedModels(liveModels);
+      }
+    } catch {
+    }
+  }
   pi.registerProvider(PROVIDER, {
     name: "Google Antigravity (OAuth)",
     baseUrl: BASE_URL,
     api: "google-generative-ai",
+    models,
     refreshModels: fetchAntigravityModels,
     oauth: {
       name: "Google Antigravity",
