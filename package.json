@@ -14,7 +14,7 @@
   },
   "homepage": "https://github.com/inouemoby/pi-antigravity",
   "pi": {
-    "extensions": ["./dist/index.js"]
+    "extensions": ["./index.ts"]
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/bundle.mjs",
