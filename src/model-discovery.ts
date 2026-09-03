@@ -262,8 +262,8 @@ export const BASELINE_MODELS: DiscoveredModel[] = [
     maxTokens: 65_535,
   },
   {
-    id: "claude-sonnet-4-6-thinking",
-    name: "Claude Sonnet 4.6 Thinking",
+    id: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6",
     reasoning: true,
     input: ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

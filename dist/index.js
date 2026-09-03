@@ -224,8 +224,8 @@ var BASELINE_MODELS = [
     maxTokens: 65535
   },
   {
-    id: "claude-sonnet-4-6-thinking",
-    name: "Claude Sonnet 4.6 Thinking",
+    id: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6",
     reasoning: true,
     input: ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -557,17 +557,23 @@ function updateUsage(model, output, usage) {
 }
 function modelForRequest(model, reasoning) {
   const id = model.id.toLowerCase();
-  if (!reasoning) return resolveModelForHeaderStyle(model.id, "antigravity").actualModel;
+  if (!reasoning || reasoning === "off") {
+    return resolveModelForHeaderStyle(model.id, "antigravity").actualModel;
+  }
   const tier = reasoning === "minimal" ? "low" : reasoning === "xhigh" ? "high" : reasoning;
   const base = model.id.replace(/-(minimal|low|medium|high|xhigh)$/i, "");
-  if (id.includes("gemini-3") || id.includes("claude")) {
+  if (id.includes("gemini-3")) {
     return resolveModelForHeaderStyle(`${base}-${tier}`, "antigravity").actualModel;
+  }
+  if (id.includes("claude")) {
+    const thinkingModel = id.includes("-thinking") ? `${base}-${tier}` : model.id;
+    return resolveModelForHeaderStyle(thinkingModel, "antigravity").actualModel;
   }
   return resolveModelForHeaderStyle(model.id, "antigravity").actualModel;
 }
 function thinkingConfig(model, options) {
   if (!model.reasoning) return void 0;
-  if (!options.reasoning) return { thinkingBudget: 0 };
+  if (!options.reasoning || options.reasoning === "off") return { thinkingBudget: 0 };
   const tier = options.reasoning === "minimal" ? "low" : options.reasoning === "xhigh" ? "high" : options.reasoning;
   if (model.id.toLowerCase().includes("gemini-3")) {
     return { includeThoughts: true, thinkingLevel: tier.toUpperCase() };
@@ -613,6 +619,14 @@ function streamAntigravity(model, context, options) {
       if (options?.maxTokens) generationConfig.maxOutputTokens = options.maxTokens;
       const thinking = thinkingConfig(model, options ?? {});
       if (thinking) generationConfig.thinkingConfig = thinking;
+      if (thinking && model.id.toLowerCase().includes("claude") && options?.reasoning && options.reasoning !== "off") {
+        const budget = typeof thinking.thinkingBudget === "number" ? thinking.thinkingBudget : 0;
+        generationConfig.maxOutputTokens = Math.max(
+          options.maxTokens ?? 0,
+          model.maxTokens,
+          budget + 1024
+        );
+      }
       if (Object.keys(generationConfig).length) request.generationConfig = generationConfig;
       const scope = sessions.beginRequest(requestSessionKey(context, options));
       const wireModel = modelForRequest(model, options?.reasoning);
@@ -636,7 +650,8 @@ function streamAntigravity(model, context, options) {
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
             Accept: "text/event-stream",
-            "User-Agent": buildAntigravityHarnessUserAgent()
+            "User-Agent": buildAntigravityHarnessUserAgent(),
+            ...model.id.toLowerCase().startsWith("claude-") && model.reasoning ? { "anthropic-beta": "interleaved-thinking-2025-05-14" } : {}
           },
           body: JSON.stringify(envelope)
         },

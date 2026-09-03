@@ -124,18 +124,29 @@ function updateUsage(model: Model<any>, output: AssistantMessage, usage?: Usage)
 
 function modelForRequest(model: Model<any>, reasoning: SimpleStreamOptions["reasoning"]): string {
   const id = model.id.toLowerCase();
-  if (!reasoning) return resolveModelForHeaderStyle(model.id, "antigravity").actualModel;
+  // Pi may pass the literal level "off". It must never become a model-name
+  // suffix such as claude-sonnet-4-6-off.
+  if (!reasoning || (reasoning as string) === "off") {
+    return resolveModelForHeaderStyle(model.id, "antigravity").actualModel;
+  }
   const tier = reasoning === "minimal" ? "low" : reasoning === "xhigh" ? "high" : reasoning;
   const base = model.id.replace(/-(minimal|low|medium|high|xhigh)$/i, "");
-  if (id.includes("gemini-3") || id.includes("claude")) {
+  if (id.includes("gemini-3")) {
     return resolveModelForHeaderStyle(`${base}-${tier}`, "antigravity").actualModel;
+  }
+  if (id.includes("claude")) {
+    // Sonnet's live catalog ID is claude-sonnet-4-6 (without -thinking or a
+    // tier suffix). Opus exposes the thinking ID; the resolver handles its
+    // tier aliases. Keep Sonnet's exact official ID here.
+    const thinkingModel = id.includes("-thinking") ? `${base}-${tier}` : model.id;
+    return resolveModelForHeaderStyle(thinkingModel, "antigravity").actualModel;
   }
   return resolveModelForHeaderStyle(model.id, "antigravity").actualModel;
 }
 
 function thinkingConfig(model: Model<any>, options: SimpleStreamOptions): Record<string, unknown> | undefined {
   if (!model.reasoning) return undefined;
-  if (!options.reasoning) return { thinkingBudget: 0 };
+  if (!options.reasoning || (options.reasoning as string) === "off") return { thinkingBudget: 0 };
   const tier = options.reasoning === "minimal" ? "low" : options.reasoning === "xhigh" ? "high" : options.reasoning;
   if (model.id.toLowerCase().includes("gemini-3")) {
     return { includeThoughts: true, thinkingLevel: tier.toUpperCase() };
@@ -190,6 +201,17 @@ export function streamAntigravity(
       if (options?.maxTokens) generationConfig.maxOutputTokens = options.maxTokens;
       const thinking = thinkingConfig(model, options ?? {} as SimpleStreamOptions);
       if (thinking) generationConfig.thinkingConfig = thinking;
+      if (thinking && model.id.toLowerCase().includes("claude") && options?.reasoning && (options.reasoning as string) !== "off") {
+        const budget = typeof thinking.thinkingBudget === "number" ? thinking.thinkingBudget : 0;
+        // Claude requires max_tokens to leave room beyond the thinking budget.
+        // Pi's maxTokens is the model's response ceiling, so use it when the
+        // caller did not provide a smaller explicit ceiling.
+        generationConfig.maxOutputTokens = Math.max(
+          options.maxTokens ?? 0,
+          model.maxTokens,
+          budget + 1_024,
+        );
+      }
       if (Object.keys(generationConfig).length) request.generationConfig = generationConfig;
 
       const scope = sessions.beginRequest(requestSessionKey(context, options));
@@ -216,6 +238,9 @@ export function streamAntigravity(
             "Content-Type": "application/json",
             Accept: "text/event-stream",
             "User-Agent": buildAntigravityHarnessUserAgent(),
+            ...(model.id.toLowerCase().startsWith("claude-") && model.reasoning
+              ? { "anthropic-beta": "interleaved-thinking-2025-05-14" }
+              : {}),
           },
           body: JSON.stringify(envelope),
         },

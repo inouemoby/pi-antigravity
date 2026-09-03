@@ -62,7 +62,7 @@ Model IDs are fetched from Antigravity at runtime. Examples of official IDs incl
 - `gemini-3.5-flash`
 - `gemini-3.1-pro`
 - `gpt-oss-120b`
-- `claude-sonnet-4-6-thinking`
+- `claude-sonnet-4-6`
 - `claude-opus-4-6-thinking`
 
 The exact list depends on the account, plan, service rollout, and current Antigravity response.
