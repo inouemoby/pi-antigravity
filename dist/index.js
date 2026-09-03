@@ -180,13 +180,23 @@ function getCacheFilePath() {
   const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(process.env.USERPROFILE || process.env.HOME || ".", ".pi/agent");
   return path.join(agentDir, "antigravity-models.json");
 }
+function mergeModels(discovered) {
+  const map = /* @__PURE__ */ new Map();
+  for (const m of BASELINE_MODELS) {
+    map.set(m.id, m);
+  }
+  for (const m of discovered) {
+    map.set(m.id, m);
+  }
+  return Array.from(map.values());
+}
 function loadCachedModels() {
   try {
     const cacheFile = getCacheFilePath();
     if (fs.existsSync(cacheFile)) {
       const data = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
       if (Array.isArray(data) && data.length > 0) {
-        return data;
+        return mergeModels(data);
       }
     }
   } catch {
@@ -238,8 +248,9 @@ async function fetchAntigravityModels(context) {
   try {
     const models = await queryAntigravityModels(credential.access, credential.refresh, context.signal);
     if (models.length > 0) {
-      saveCachedModels(models);
-      return models;
+      const merged = mergeModels(models);
+      saveCachedModels(merged);
+      return merged;
     }
   } catch {
   }
@@ -832,8 +843,7 @@ async function piAntigravity(pi) {
       const liveModels = await queryAntigravityModels(stored.access, stored.refresh, controller.signal);
       clearTimeout(timeout);
       if (liveModels.length > 0) {
-        models = liveModels;
-        saveCachedModels(liveModels);
+        models = loadCachedModels();
       }
     } catch {
     }

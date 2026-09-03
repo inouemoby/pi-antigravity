@@ -205,13 +205,24 @@ export function getCacheFilePath(): string {
   return path.join(agentDir, "antigravity-models.json");
 }
 
+function mergeModels(discovered: DiscoveredModel[]): DiscoveredModel[] {
+  const map = new Map<string, DiscoveredModel>();
+  for (const m of BASELINE_MODELS) {
+    map.set(m.id, m);
+  }
+  for (const m of discovered) {
+    map.set(m.id, m);
+  }
+  return Array.from(map.values());
+}
+
 export function loadCachedModels(): DiscoveredModel[] {
   try {
     const cacheFile = getCacheFilePath();
     if (fs.existsSync(cacheFile)) {
       const data = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
       if (Array.isArray(data) && data.length > 0) {
-        return data;
+        return mergeModels(data);
       }
     }
   } catch {
@@ -276,8 +287,9 @@ export async function fetchAntigravityModels(context: RefreshModelsContext): Pro
   try {
     const models = await queryAntigravityModels(credential.access, credential.refresh, context.signal);
     if (models.length > 0) {
-      saveCachedModels(models);
-      return models;
+      const merged = mergeModels(models);
+      saveCachedModels(merged);
+      return merged;
     }
   } catch {
     // Fall back to cached models

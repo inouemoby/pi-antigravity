@@ -268,8 +268,7 @@ export default async function piAntigravity(pi: ExtensionAPI): Promise<void> {
       const liveModels = await queryAntigravityModels(stored.access, stored.refresh, controller.signal);
       clearTimeout(timeout);
       if (liveModels.length > 0) {
-        models = liveModels;
-        saveCachedModels(liveModels);
+        models = loadCachedModels();
       }
     } catch {
       // Fall through to cached models on offline / timeout
