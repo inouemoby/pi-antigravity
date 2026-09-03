@@ -16,10 +16,13 @@ Authenticate with the Google account that owns your Google AI plan:
 
 ```text
 /login
-→ Select "Google Antigravity"
+→ Sign in with an account
+→ Select "Google Antigravity (OAuth)"
 → Complete Google OAuth in your browser
 → Paste the callback URL or authorization code back into Pi
 ```
+
+`/login google-antigravity` can be used to skip the provider selector.
 
 The plugin uses OAuth 2.0 with PKCE. Access and refresh tokens are stored by Pi's credential store and refreshed automatically. No `GEMINI_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `agy`, or `gemini` executable is required.
 
@@ -32,39 +35,36 @@ The plugin uses OAuth 2.0 with PKCE. Access and refresh tokens are stored by Pi'
 Or select one directly from the command line:
 
 ```bash
-pi --model google-antigravity/antigravity-gemini-3.8-flash
+pi --model google-antigravity/gemini-3.8-flash
 ```
 
-List the models registered by the plugin:
-
-```text
-/antigravity-models
-```
+The model catalog is fetched from Antigravity after OAuth login and refreshed by Pi. The provider uses the exact runtime model IDs returned by Antigravity; it does not pre-register a renamed `antigravity-` model alias.
 
 ## What it does
 
-On startup, this extension:
+This extension:
 
 1. Registers `google-antigravity` as a Pi provider.
 2. Adds a browser-based Google OAuth login flow to `/login`.
-3. Imports the public Antigravity model catalog.
-4. Converts Pi messages and tools to the Antigravity request format.
-5. Streams text, thinking blocks, tool calls, and usage data back to Pi.
+3. Fetches the available model list from Antigravity after authentication.
+4. Keeps the exact official runtime model IDs returned by the service.
+5. Converts Pi messages and tools to the Antigravity request format.
+6. Streams text, thinking blocks, tool calls, and usage data back to Pi.
 
 ## Available models
 
-The model catalog is provided by the Antigravity compatibility layer and can change independently of this plugin. The current catalog includes entries such as:
+Model IDs are fetched from Antigravity at runtime. Examples of official IDs include:
 
-- `antigravity-gemini-3.8-flash`
-- `antigravity-gemini-3.7-flash`
-- `antigravity-gemini-3.6-flash`
-- `antigravity-gemini-3.5-flash`
-- `antigravity-gemini-3.1-pro`
-- `antigravity-gpt-oss-120b-medium`
-- `antigravity-claude-sonnet-4-6-thinking`
-- `antigravity-claude-opus-4-6-thinking`
+- `gemini-3.8-flash`
+- `gemini-3.7-flash`
+- `gemini-3.6-flash`
+- `gemini-3.5-flash`
+- `gemini-3.1-pro`
+- `gpt-oss-120b`
+- `claude-sonnet-4-6-thinking`
+- `claude-opus-4-6-thinking`
 
-Use `/antigravity-models` to see the exact models available in the installed version.
+The exact list depends on the account, plan, service rollout, and current Antigravity response.
 
 ## Capabilities
 

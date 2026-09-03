@@ -2,7 +2,6 @@
 import {
   authorizeAntigravity,
   exchangeAntigravity,
-  getPublicModelDefinitions,
   refreshAntigravityToken
 } from "@cortexkit/antigravity-auth-core";
 
@@ -23,13 +22,108 @@ function getPackedRefresh(access) {
   return packedRefreshByAccessToken.get(access);
 }
 
+// src/model-discovery.ts
+import {
+  buildAntigravityHarnessBootstrapHeaders,
+  buildAntigravityLoadCodeAssistMetadata,
+  ensureProjectContext
+} from "@cortexkit/antigravity-auth-core";
+var ENDPOINTS = [
+  "https://cloudcode-pa.googleapis.com",
+  "https://daily-cloudcode-pa.sandbox.googleapis.com"
+];
+var MODEL_ID = /^(gemini-|claude-|gpt-oss-)/i;
+function stringValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : void 0;
+}
+function numberValue(value, fallback) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+function hasImageInput(info) {
+  if (info.supportsImages === true) return true;
+  if (Array.isArray(info.inputModalities)) {
+    return info.inputModalities.some((value) => String(value).toLowerCase().includes("image"));
+  }
+  return false;
+}
+function modelDefinition(id, info) {
+  const name = stringValue(info.displayName) ?? stringValue(info.label) ?? stringValue(info.name) ?? stringValue(info.modelName) ?? id;
+  const reasoning = info.supportsThinking === true || info.supportsThinking === void 0 && /gemini|claude|gpt-oss/i.test(id);
+  return {
+    id,
+    name,
+    reasoning,
+    input: hasImageInput(info) ? ["text", "image"] : ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: numberValue(info.contextWindow, 1048576),
+    maxTokens: numberValue(info.maxOutputTokens ?? info.maxOutputTokenCount, 65536)
+  };
+}
+function extractModels(payload) {
+  if (!payload || typeof payload !== "object") return [];
+  const models = payload.models;
+  if (!models || typeof models !== "object" || Array.isArray(models)) return [];
+  return Object.entries(models).filter(([id]) => MODEL_ID.test(id) && !/\s/.test(id)).map(([id, info]) => modelDefinition(id, info ?? {}));
+}
+function storedModels(context) {
+  return (context.stored?.models ?? []).filter((model) => Boolean(model && typeof model.id === "string")).map((model) => ({
+    id: model.id,
+    name: model.name,
+    reasoning: model.reasoning,
+    input: model.input,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens
+  }));
+}
+async function fetchAntigravityModels(context) {
+  const credential = context.credential?.type === "oauth" ? context.credential : void 0;
+  if (!credential?.access) return storedModels(context);
+  if (!context.allowNetwork || context.signal.aborted) return storedModels(context);
+  const project = await ensureProjectContext({
+    type: "oauth",
+    refresh: credential.refresh,
+    access: credential.access,
+    expires: credential.expires
+  });
+  if (!project.effectiveProjectId) return storedModels(context);
+  const headers = {
+    ...buildAntigravityHarnessBootstrapHeaders(credential.access),
+    "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
+    "Client-Metadata": JSON.stringify(buildAntigravityLoadCodeAssistMetadata())
+  };
+  let lastError;
+  for (const endpoint of ENDPOINTS) {
+    try {
+      const response = await fetch(`${endpoint}/v1internal:fetchAvailableModels`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ project: project.effectiveProjectId }),
+        signal: context.signal
+      });
+      if (!response.ok) {
+        lastError = new Error(`Model discovery failed: HTTP ${response.status}`);
+        continue;
+      }
+      const models = extractModels(await response.json());
+      if (models.length > 0) return models;
+      lastError = new Error("Antigravity returned no usable models");
+    } catch (error) {
+      if (context.signal.aborted) return storedModels(context);
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  if (lastError && storedModels(context).length > 0) return storedModels(context);
+  throw lastError ?? new Error("Antigravity model discovery failed");
+}
+
 // src/stream.ts
 import {
   AgyRequestSessionStore,
   ANTIGRAVITY_ENDPOINT,
   buildAgyAgentRequestMetadata,
   buildAntigravityHarnessUserAgent,
-  ensureProjectContext,
+  ensureProjectContext as ensureProjectContext2,
   fetchWithAgyCliTransport,
   orderAgyRequestPayloadInPlace,
   resolveModelForHeaderStyle
@@ -254,7 +348,7 @@ function streamAntigravity(model, context, options) {
       const accessToken = options?.apiKey ?? "";
       if (!accessToken) throw new Error("Antigravity requires OAuth authentication. Use /login.");
       const packedRefresh = getPackedRefresh(accessToken) ?? accessToken;
-      const project = await ensureProjectContext({
+      const project = await ensureProjectContext2({
         type: "oauth",
         refresh: packedRefresh,
         access: accessToken,
@@ -398,17 +492,6 @@ function streamAntigravity(model, context, options) {
 // src/index.ts
 var PROVIDER = "google-antigravity";
 var BASE_URL = "https://cloudcode-pa.googleapis.com";
-function publicModels() {
-  return Object.values(getPublicModelDefinitions()).filter((model) => !model.modalities.output.includes("image")).map((model) => ({
-    id: model.id,
-    name: model.name,
-    reasoning: model.reasoning,
-    input: model.modalities.input.filter((value) => value === "text" || value === "image"),
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: model.limit.context,
-    maxTokens: model.limit.output
-  }));
-}
 async function login(callbacks) {
   const auth = await authorizeAntigravity();
   callbacks.onAuth({
@@ -450,14 +533,14 @@ async function refresh(credentials) {
   };
 }
 function piAntigravity(pi) {
-  const models = publicModels();
   pi.registerProvider(PROVIDER, {
     name: "Google Antigravity (OAuth)",
     baseUrl: BASE_URL,
     api: "google-generative-ai",
-    models,
+    refreshModels: fetchAntigravityModels,
     oauth: {
       name: "Google Antigravity",
+      isSubscription: true,
       login,
       refreshToken: refresh,
       getApiKey(credentials) {
@@ -466,13 +549,6 @@ function piAntigravity(pi) {
       }
     },
     streamSimple: streamAntigravity
-  });
-  pi.registerCommand("antigravity-models", {
-    description: "List the Antigravity models registered by this plugin",
-    handler: async (_args, ctx) => {
-      const names = models.map((model) => `${PROVIDER}/${model.id}`).join("\n");
-      ctx.ui.notify(names, "info");
-    }
   });
 }
 export {

@@ -1,30 +1,16 @@
 import {
   authorizeAntigravity,
   exchangeAntigravity,
-  getPublicModelDefinitions,
   refreshAntigravityToken,
 } from "@cortexkit/antigravity-auth-core";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { rememberPackedRefresh } from "./credential-cache.ts";
+import { fetchAntigravityModels } from "./model-discovery.ts";
 import { streamAntigravity } from "./stream.ts";
 
 const PROVIDER = "google-antigravity";
 const BASE_URL = "https://cloudcode-pa.googleapis.com";
-
-function publicModels() {
-  return Object.values(getPublicModelDefinitions())
-    .filter((model) => !model.modalities.output.includes("image"))
-    .map((model) => ({
-      id: model.id,
-      name: model.name,
-      reasoning: model.reasoning,
-      input: model.modalities.input.filter((value): value is "text" | "image" => value === "text" || value === "image"),
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: model.limit.context,
-      maxTokens: model.limit.output,
-    }));
-}
 
 async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
   const auth = await authorizeAntigravity();
@@ -76,15 +62,14 @@ async function refresh(credentials: OAuthCredentials): Promise<OAuthCredentials>
 }
 
 export default function piAntigravity(pi: ExtensionAPI): void {
-  const models = publicModels();
-
   pi.registerProvider(PROVIDER, {
     name: "Google Antigravity (OAuth)",
     baseUrl: BASE_URL,
     api: "google-generative-ai",
-    models,
+    refreshModels: fetchAntigravityModels,
     oauth: {
       name: "Google Antigravity",
+      isSubscription: true,
       login,
       refreshToken: refresh,
       getApiKey(credentials) {
@@ -93,13 +78,5 @@ export default function piAntigravity(pi: ExtensionAPI): void {
       },
     },
     streamSimple: streamAntigravity,
-  });
-
-  pi.registerCommand("antigravity-models", {
-    description: "List the Antigravity models registered by this plugin",
-    handler: async (_args, ctx) => {
-      const names = models.map((model) => `${PROVIDER}/${model.id}`).join("\n");
-      ctx.ui.notify(names, "info");
-    },
   });
 }
