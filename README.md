@@ -51,7 +51,6 @@ This extension:
 4. Keeps the exact official runtime model IDs returned by the service.
 5. Converts Pi messages and tools to the Antigravity request format.
 6. Streams text, thinking blocks, tool calls, and usage data back to Pi.
-7. When `gemini-3.8-flash` is available, substitutes only the model and its authenticated request context for Pi's native context compaction (`/compact`, threshold, and overflow compaction). Pi itself still performs the preparation, prompting, split-turn handling, retrying, persistence, and cancellation; no extension compaction hook or custom summary is used.
 
 ## Available models
 

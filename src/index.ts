@@ -16,7 +16,6 @@ import {
   saveCachedModels,
 } from "./model-discovery.ts";
 import { streamAntigravity } from "./stream.ts";
-import { installAntigravityCompactionModelOverride } from "./compaction.ts";
 
 const PROVIDER = "google-antigravity";
 const BASE_URL = "https://cloudcode-pa.googleapis.com";
@@ -296,5 +295,4 @@ export default async function piAntigravity(pi: ExtensionAPI): Promise<void> {
     streamSimple: streamAntigravity,
   });
 
-  installAntigravityCompactionModelOverride();
 }
