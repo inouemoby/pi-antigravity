@@ -51,7 +51,7 @@ This extension:
 4. Keeps the exact official runtime model IDs returned by the service.
 5. Converts Pi messages and tools to the Antigravity request format.
 6. Streams text, thinking blocks, tool calls, and usage data back to Pi.
-7. When OAuth authentication resolves and `gemini-3.8-flash` is available, automatically uses that Antigravity model for Pi context compaction (`/compact`, threshold, and overflow compaction). Authentication, catalog, or request failures fall back to Pi's normal compaction model.
+7. When OAuth authentication resolves and `gemini-3.8-flash` is available, automatically uses that Antigravity model for Pi context compaction (`/compact`, threshold, and overflow compaction). Authentication, catalog, request failures, or a 90-second deadline fall back to Pi's normal compaction model.
 
 ## Available models
 

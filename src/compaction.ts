@@ -3,6 +3,61 @@ import { convertToLlm, serializeConversation, type ExtensionAPI } from "@earendi
 
 const PROVIDER = "google-antigravity";
 const MODEL_ID = "gemini-3.8-flash";
+const COMPACTION_TIMEOUT_MS = 90_000;
+
+class CompactionTimeoutError extends Error {
+	constructor() {
+		super(`Antigravity compaction exceeded ${COMPACTION_TIMEOUT_MS / 1000} seconds.`);
+		this.name = "CompactionTimeoutError";
+	}
+}
+
+let inFlightCompaction: Promise<unknown> | undefined;
+
+/**
+ * Antigravity's project bootstrap currently has no AbortSignal parameter.
+ * Race the complete operation against both Pi cancellation and a hard deadline
+ * so an unresponsive bootstrap or SSE stream never blocks Pi compaction.
+ */
+async function completeWithDeadline<T>(
+	parentSignal: AbortSignal,
+	operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+	if (inFlightCompaction) throw new Error("An earlier Antigravity compaction request is still pending.");
+	const controller = new AbortController();
+	const signal = typeof AbortSignal.any === "function"
+		? AbortSignal.any([parentSignal, controller.signal])
+		: parentSignal;
+	const request = operation(signal);
+	inFlightCompaction = request;
+	void request.finally(() => {
+		if (inFlightCompaction === request) inFlightCompaction = undefined;
+	}).catch(() => {});
+
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+	let removeAbort: (() => void) | undefined;
+	const timeout = new Promise<never>((_resolve, reject) => {
+		timeoutId = setTimeout(() => {
+			const error = new CompactionTimeoutError();
+			controller.abort(error);
+			reject(error);
+		}, COMPACTION_TIMEOUT_MS);
+	});
+	const cancelled = new Promise<never>((_resolve, reject) => {
+		const abort = () => reject(parentSignal.reason ?? new Error("Compaction cancelled."));
+		if (parentSignal.aborted) abort();
+		else {
+			parentSignal.addEventListener("abort", abort, { once: true });
+			removeAbort = () => parentSignal.removeEventListener("abort", abort);
+		}
+	});
+	try {
+		return await Promise.race([request, timeout, cancelled]);
+	} finally {
+		if (timeoutId) clearTimeout(timeoutId);
+		removeAbort?.();
+	}
+}
 
 function textFromResponse(response: { content: Array<{ type: string; text?: string }> }): string {
   return response.content
@@ -70,41 +125,44 @@ export function registerAntigravityCompaction(pi: ExtensionAPI): void {
     if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) return;
 
     try {
-      const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-      if (!resolved.ok || !resolved.apiKey) return;
-
       const { preparation } = event;
       const messages = [...preparation.messagesToSummarize, ...preparation.turnPrefixMessages];
       if (messages.length === 0 && !preparation.previousSummary) return;
 
       const files = fileLists(preparation.fileOps);
       if (ctx.hasUI) ctx.ui.notify("Compacting with Google Antigravity Gemini 3.8 Flash...", "info");
-      const response = await ctx.modelRegistry.complete(
-        model,
-        {
-          messages: [{
-            role: "user",
-            content: [{
-              type: "text",
-              text: compactionPrompt({
-                conversation: serializeConversation(convertToLlm(messages)),
-                previousSummary: preparation.previousSummary,
-                customInstructions: event.customInstructions,
-                readFiles: files.readFiles,
-                modifiedFiles: files.modifiedFiles,
-              }),
+      const response = await completeWithDeadline(event.signal, async (signal) => {
+        const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (!resolved.ok || !resolved.apiKey) return undefined;
+        return await ctx.modelRegistry.complete(
+          model,
+          {
+            messages: [{
+              role: "user",
+              content: [{
+                type: "text",
+                text: compactionPrompt({
+                  conversation: serializeConversation(convertToLlm(messages)),
+                  previousSummary: preparation.previousSummary,
+                  customInstructions: event.customInstructions,
+                  readFiles: files.readFiles,
+                  modifiedFiles: files.modifiedFiles,
+                }),
+              }],
+              timestamp: Date.now(),
             }],
-            timestamp: Date.now(),
-          }],
-        },
-        {
-          maxTokens: 8192,
-          signal: event.signal,
-          cacheRetention: "none",
-          sessionId: uuidv7(),
-        },
-      );
+          },
+          {
+            maxTokens: 8192,
+            reasoning: "off",
+            signal,
+            cacheRetention: "none",
+            sessionId: uuidv7(),
+          },
+        );
+      });
 
+      if (!response) return;
       const summary = textFromResponse(response);
       if (event.signal.aborted || response.stopReason !== "stop" || !summary) return;
       return {
